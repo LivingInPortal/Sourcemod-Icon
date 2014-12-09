@@ -1,7 +1,11 @@
 #include <sourcemod>
 #include <sdktools>
+#include <sdkhooks>
+#include <zombiereloaded>
 
 #pragma semicolon 1
+
+//#define DEBUG
 
 #define CONFIGPATH "configs/icon.cfg"
 
@@ -10,7 +14,7 @@ public Plugin:myinfo =
 	name = "Icon",
 	author = "benefitOfLaughing",
 	description = "Put an icon above the head",
-	version = "0.1",
+	version = "0.2",
 	url = "www.sourcemod.net"
 };
 
@@ -32,7 +36,6 @@ public OnPluginStart()
 	Initialize();
 
 	HookEvent("player_spawn", Event_PlayerSpawn);
-	HookEvent("player_death", Event_PlayerDeath);
 }
 
 public OnPluginEnd()
@@ -60,22 +63,35 @@ public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontbroa
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 
 	if(IsClientInGame(client) && IsPlayerAlive(client)) {
-		GiveModel(client);
+		if(GiveModel(client)) {
+#if defined DEBUG
+			LogMessage("Give Model for client %d", client);
+#endif
+		}
 	}
 	
 	return Plugin_Continue;
 }
 
-public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontbroadcast)
+public OnGameFrame()
 {
-	if(!g_bPrecached)	return Plugin_Continue;
-	
-	new client = GetClientOfUserId(GetEventInt(event, "userid"));
-	
-	Entity_SafeDelete(g_Models[client]);
-	g_Models[client] = -1;
-	
-	return Plugin_Continue;
+	for(new i = 1; i <= MaxClients; i++) {
+		if(IsClientInGame(i)) {
+			CheckClientAliveForModel(i);
+		}
+	}
+}
+
+CheckClientAliveForModel(client)
+{
+	if(!IsValidEntity(g_Models[client]))	return;
+	if(!IsPlayerAlive(client)) {
+#if defined DEBUG
+		LogMessage("Delete Model from client %d", client);
+#endif
+		Entity_SafeDelete(g_Models[client]);
+		g_Models[client] = -1;
+	}
 }
 
 bool:GiveModel(client)

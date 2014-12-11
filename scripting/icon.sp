@@ -1,7 +1,5 @@
 #include <sourcemod>
 #include <sdktools>
-#include <sdkhooks>
-#include <zombiereloaded>
 
 #pragma semicolon 1
 

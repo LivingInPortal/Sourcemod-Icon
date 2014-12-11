@@ -5,7 +5,7 @@
 
 #pragma semicolon 1
 
-//#define DEBUG
+#define DEBUG
 
 #define CONFIGPATH "configs/icon.cfg"
 
@@ -14,7 +14,7 @@ public Plugin:myinfo =
 	name = "Icon",
 	author = "benefitOfLaughing",
 	description = "Put an icon above the head",
-	version = "0.2",
+	version = "0.3",
 	url = "www.sourcemod.net"
 };
 
@@ -26,7 +26,6 @@ enum AuthOption
 
 new bool:g_bPrecached = false;
 new g_Models[MAXPLAYERS + 1] = {-1, ...};
-new Handle:g_hKv = INVALID_HANDLE;
 new Handle:g_hClasses = INVALID_HANDLE;
 new Handle:g_hClassIndexes = INVALID_HANDLE;
 new Handle:g_hAuthStack = INVALID_HANDLE;
@@ -49,9 +48,15 @@ public OnMapStart()
 {
 	g_bPrecached = false;
 	
-	Kv_Parse();
-	LoadFileFromConfig(g_hKv);
-	LoadPlayerFromConfig(g_hKv);
+	new Handle:hKv = Kv_Parse();
+	if(hKv == INVALID_HANDLE) {
+		SetFailState("I cannot load keyvalue file from %s", CONFIGPATH);
+	}
+
+	LoadFileFromConfig(hKv);
+	LoadPlayerFromConfig(hKv);
+
+	CloseHandle(hKv);
 	
 	g_bPrecached = true;
 }
@@ -76,7 +81,7 @@ public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontbroa
 public OnGameFrame()
 {
 	for(new i = 1; i <= MaxClients; i++) {
-		if(IsClientInGame(i)) {
+		if(IsValidEntity(g_Models[i])) {
 			CheckClientAliveForModel(i);
 		}
 	}
@@ -84,8 +89,7 @@ public OnGameFrame()
 
 CheckClientAliveForModel(client)
 {
-	if(!IsValidEntity(g_Models[client]))	return;
-	if(!IsPlayerAlive(client)) {
+	if(!IsClientInGame(client) || !IsPlayerAlive(client)) {
 #if defined DEBUG
 		LogMessage("Delete Model from client %d", client);
 #endif
@@ -99,6 +103,8 @@ bool:GiveModel(client)
 	new AuthOption:auth;
 	new String:sAttribute[30];
 	new String:sClass[50];
+	new String:sScale[10];
+
 	for(new i = 0; i < GetArraySize(g_hAuthStack); i++) {
 		new Handle:datapack = Handle:GetArrayCell(g_hAuthStack, i);
 		ResetPack(datapack);
@@ -106,32 +112,36 @@ bool:GiveModel(client)
 		auth = ReadPackCell(datapack);
 		ReadPackString(datapack, sAttribute, sizeof(sAttribute));
 		ReadPackString(datapack, sClass, sizeof(sClass));
-		
+		ReadPackString(datapack, sScale, sizeof(sScale));
+
 		switch(auth) {
 			case AuthOption_Flags:
 			{
-				if(CheckClientFlags(client, sAttribute)) {
-					if(!ClassGiveModel(client, sClass)) {
-						LogMessage("Couldnt give class %s for client %d", sClass, client);
-					}
-					return true;
+				if(!CheckClientFlags(client, sAttribute)) {
+					continue;
 				}
 			}
 			case AuthOption_Steam:
 			{
-				if(CheckClientSteam(client, sAttribute)) {
-					if(!ClassGiveModel(client, sClass)) {
-						LogMessage("Couldnt give class %s for client %d", sClass, client);
-					}
-					return true;
+				if(!CheckClientSteam(client, sAttribute)) {
+					continue;
 				}
 			}
 		}
+
+		if(!ClassGiveModel(client, sClass, sScale)) {
+			LogMessage("Couldnt give class %s for client %d", sClass, client);
+			return false;
+		} else {
+			// Success.
+			return true;
+		}
 	}
+	// Not found.
 	return false;
 }
 
-Kv_Parse()
+Handle:Kv_Parse()
 {
 	new String:filepath[PLATFORM_MAX_PATH];
 	new Handle:kv = CreateKeyValues("Icon");
@@ -139,29 +149,30 @@ Kv_Parse()
 	BuildPath(Path_SM, filepath, sizeof(filepath), CONFIGPATH);
 
 	if(!FileToKeyValues(kv, filepath))
-		SetFailState("I cannot load keyvalue file from %s", CONFIGPATH);
+		return INVALID_HANDLE;
 
-	if(g_hKv != INVALID_HANDLE)
-		CloseHandle(g_hKv);
-	g_hKv = kv;
+	return kv;
 }
 
 Initialize()
 {
-	g_hClasses = CreateArray(4096);
+	g_hClasses = CreateArray();
 	g_hClassIndexes = CreateTrie();
 	g_hAuthStack = CreateArray();
 }
 
-CreateIcon(String:vmt[])
+CreateIcon(const String:vmt[], const String:scale[])
 {
+#if defined DEBUG
+	LogMessage("CreateIcon vmt: %s, scale: %s", vmt, scale);
+#endif
 	new sprite = CreateEntityByName("env_sprite_oriented");
 	
 	if(sprite == -1)	return -1;
 
 	DispatchKeyValue(sprite, "classname", "env_sprite_oriented");
 	DispatchKeyValue(sprite, "spawnflags", "1");
-	DispatchKeyValue(sprite, "scale", "0.3");
+	DispatchKeyValue(sprite, "scale", scale);
 	DispatchKeyValue(sprite, "rendermode", "1");
 	DispatchKeyValue(sprite, "rendercolor", "255 255 255");
 	DispatchKeyValue(sprite, "model", vmt);
@@ -191,7 +202,7 @@ Entity_SafeDelete(entity)
 	}
 }
 
-bool:CheckClientFlags(client, String:flags[])
+bool:CheckClientFlags(client, const String:flags[])
 {
 	if(flags[0] == '\0')
 		return true;
@@ -199,7 +210,7 @@ bool:CheckClientFlags(client, String:flags[])
 	return ((GetAdminFlags(GetUserAdmin(client), Access_Effective)) & bitstring) == bitstring;
 }
 
-bool:CheckClientSteam(client, String:steamid[])
+bool:CheckClientSteam(client, const String:steamid[])
 {
 	new String:client_steamid[32];
 	if(!GetClientAuthId(client, AuthId_Steam2, client_steamid, sizeof(client_steamid)))	return false;
@@ -208,10 +219,10 @@ bool:CheckClientSteam(client, String:steamid[])
 
 LoadPlayerFromConfig(Handle:kv)
 {
-	new String:sSection[50];
 	new String:sAuth[10];
 	new String:sAttribute[30];
 	new String:sClass[50];
+	new String:sScale[10];
 	new AuthOption:auth;
 
 	ClearArray(g_hAuthStack);
@@ -222,7 +233,6 @@ LoadPlayerFromConfig(Handle:kv)
 	if(!KvGotoFirstSubKey(kv))	return false;
 
 	do {
-		KvGetSectionName(kv, sSection, sizeof(sSection));
 		KvGetString(kv, "auth", sAuth, sizeof(sAuth));
 		KvGetString(kv, "class", sClass, sizeof(sClass));
 
@@ -233,14 +243,14 @@ LoadPlayerFromConfig(Handle:kv)
 
 		if(StrEqual("flags", sAuth, false)) {
 			auth = AuthOption_Flags;
-			KvGetString(kv, "flags", sAttribute, sizeof(sAttribute));
 		} else if(StrEqual("steam", sAuth, false)) {
 			auth = AuthOption_Steam;
-			KvGetString(kv, "steam", sAttribute, sizeof(sAttribute));
 		} else {
 			LogMessage("Unrecognized option in \"Player %s\"", sClass);
 			continue;
 		}
+		KvGetString(kv, "attribute", sAttribute, sizeof(sAttribute));
+		KvGetString(kv, "scale", sScale, sizeof(sScale));
 
 		new Handle:datapack = CreateDataPack();
 		// 1: Auth
@@ -249,6 +259,8 @@ LoadPlayerFromConfig(Handle:kv)
 		WritePackString(datapack, sAttribute);
 		// 3: Class Name
 		WritePackString(datapack, sClass);
+		// 4: Scale
+		WritePackString(datapack, sScale);
 
 		PushArrayCell(g_hAuthStack, datapack);
 	} while(KvGotoNextKey(kv));
@@ -261,9 +273,8 @@ LoadFileFromConfig(Handle:kv)
 {
 	new Handle:hPrecachedFiles = CreateArray();
 	new String:sClass[50];
-	new String:sVMT[128];
-	new String:sVTF[128];
-	new count;
+	new String:sVMT[PLATFORM_MAX_PATH];
+	new String:sVTF[PLATFORM_MAX_PATH];
 	
 	ClearArray(g_hClasses);
 	ClearTrie(g_hClassIndexes);
@@ -294,9 +305,13 @@ LoadFileFromConfig(Handle:kv)
 		PushArrayString(hPrecachedFiles, sVMT);
 		PushArrayString(hPrecachedFiles, sVTF);
 
-		count = GetArraySize(g_hClasses);
+		new count = GetArraySize(g_hClasses);
+
 		// Save VMT filepath
-		PushArrayString(g_hClasses, sVMT);
+		new Handle:classPack = CreateDataPack();
+		WritePackString(classPack, sVMT);
+
+		PushArrayCell(g_hClasses, classPack);
 		SetTrieValue(g_hClassIndexes, sClass, count);
 	} while(KvGotoNextKey(kv));
 
@@ -305,16 +320,20 @@ LoadFileFromConfig(Handle:kv)
 	return 0;
 }
 
-bool:ClassGiveModel(client, String:class[])
+bool:ClassGiveModel(client, const String:class[], const String:scale[])
 {
 	new index;
-	new String:filepath[128];
+	new String:filepath[PLATFORM_MAX_PATH];
 
 	if(!GetTrieValue(g_hClassIndexes, class, index))	return false;
-	GetArrayString(g_hClasses, index, filepath, sizeof(filepath));
+	new Handle:classPack = Handle:GetArrayCell(g_hClasses, index);
+	ResetPack(classPack);
+	ReadPackString(classPack, filepath, sizeof(filepath));
 
+	// Delete an entity(if exists) first
 	Entity_SafeDelete(g_Models[client]);
-	g_Models[client] = CreateIcon(filepath);
+
+	g_Models[client] = CreateIcon(filepath, scale);
 
 	if(g_Models[client] != -1) {
 		PlaceAndBindIcon(client, g_Models[client]);
